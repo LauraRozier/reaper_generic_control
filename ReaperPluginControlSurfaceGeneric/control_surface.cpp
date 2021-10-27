@@ -171,8 +171,15 @@ private:
 						midi_out->Send(0xB0, finder->second, val ? 0x7f : 0, -1);
 				};
 
-			resetTracks = [midi_out, solo_map, mute_map, rec_map]() {
+			resetTracks = [this, midi_out, solo_map, mute_map, rec_map]() {
 				double val = 0;
+
+				for (const auto& control : this->_control_mappings)
+				{
+					midi_out->Send(0xB0, control.second.SoloId, 0, -1);
+					midi_out->Send(0xB0, control.second.MuteId, 0, -1);
+					midi_out->Send(0xB0, control.second.RecId, 0, -1);
+				}
 
 				for (const auto& control : solo_map)
 				{
