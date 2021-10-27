@@ -1,5 +1,9 @@
 {
     "SurfaceName": "nanokontrol2",
+    "Control": {
+        "Track Back": 58,
+        "Track Forward": 59
+    },
     "Transport": {
         "Cycle": 46,
         "Forward": 44,
