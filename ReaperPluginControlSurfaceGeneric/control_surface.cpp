@@ -31,7 +31,6 @@
 
 #pragma warning (disable:4996)
 
-
 /*
 A Surface Preset does the mapping from MIDI keycodes to actions in Reaper.
 Several named presets may be available in C:\Program Files\REAPER (x64)\Plugins\reaper_plugin_control_surface_generic_presets\
@@ -50,8 +49,9 @@ private:
 
 	std::string _name;
 	std::string _filename;
-	int _file_name_hash;
+	uint32_t _file_name_hash;
 	int _bank;
+	bool _has_master;
 	ControlMapping _master_mapping;
 	std::map<int, ControlMapping> _control_mappings;
 
@@ -86,32 +86,35 @@ private:
 
 		MediaTrack* media_track = CSurf_TrackFromID(0, false);
 
-		if (_master_mapping.SoloId > -1)
+		if (_has_master)
 		{
-			_controls[_master_mapping.SoloId] = [media_track](int value) { CSurf_OnSoloChange(media_track, value); };
-			solo_map[media_track] = _master_mapping.SoloId;
+			if (_master_mapping.SoloId > -1)
+			{
+				_controls[_master_mapping.SoloId] = [media_track](int value) { CSurf_OnSoloChange(media_track, value); };
+				solo_map[media_track] = _master_mapping.SoloId;
+			}
+
+			if (_master_mapping.MuteId > -1)
+			{
+				_controls[_master_mapping.MuteId] = [media_track](int value) { CSurf_OnMuteChange(media_track, value); };
+				mute_map[media_track] = _master_mapping.MuteId;
+			}
+
+			if (_master_mapping.RecId > -1)
+			{
+				_controls[_master_mapping.RecId] = [media_track](int value) { CSurf_OnRecArmChange(media_track, value); };
+				rec_map[media_track] = _master_mapping.RecId;
+			}
+
+			if (_master_mapping.VolumeId > -1)
+				_controls[_master_mapping.VolumeId] = [media_track](int value) { CSurf_OnVolumeChange(media_track, charToVol(value), false); };
+
+			if (_master_mapping.PanId > -1)
+				_controls[_master_mapping.PanId] = [media_track](int value) { CSurf_OnPanChange(media_track, charToPan(value), false); };
 		}
-
-		if (_master_mapping.MuteId > -1)
-		{
-			_controls[_master_mapping.MuteId] = [media_track](int value) { CSurf_OnMuteChange(media_track, value); };
-			mute_map[media_track] = _master_mapping.MuteId;
-		}
-
-		if (_master_mapping.RecId > -1)
-		{
-			_controls[_master_mapping.RecId] = [media_track](int value) { CSurf_OnRecArmChange(media_track, value); };
-			rec_map[media_track] = _master_mapping.RecId;
-		}
-
-		if (_master_mapping.VolumeId > -1)
-			_controls[_master_mapping.VolumeId] = [media_track](int value) { CSurf_OnVolumeChange(media_track, charToVol(value), false); };
-
-		if (_master_mapping.PanId > -1)
-			_controls[_master_mapping.PanId] = [media_track](int value) { CSurf_OnPanChange(media_track, charToPan(value), false); };
 
 		int definedMappings = _control_mappings.size();
-		int track_id = 1 + (definedMappings * _bank); // 8 faders, 1 is always master, rest shifts
+		int track_id = 1 + (definedMappings * _bank);
 
 		for (int i = 0; i < definedMappings; i++)
 		{
@@ -227,14 +230,14 @@ public:
 public:
 	SurfacePreset(const std::string& filename)
 		: _filename(filename)
-		, _file_name_hash((int)std::hash<std::string>()(filename))
+		, _file_name_hash(static_cast<uint32_t>(std::hash<std::string>()(filename)))
 	{
 		_bank = 0;
 		parseName();
 		initFunctions();
 	}
 
-	int fileHash() const
+	uint32_t fileHash() const
 	{
 		return _file_name_hash;
 	}
@@ -377,6 +380,7 @@ public:
 
 		if (doc.HasMember("Master"))
 		{
+			_has_master = true;
 			auto& master = doc["Master"];
 			MediaTrack* media_track = CSurf_TrackFromID(0, false);
 
@@ -394,6 +398,10 @@ public:
 
 			if (master.HasMember("Pan"))
 				_master_mapping.PanId = master["Pan"].GetInt();
+		}
+		else
+		{
+			_has_master = false;
 		}
 
 		if (doc.HasMember("Tracks"))
@@ -444,13 +452,13 @@ public:
 /*
 The List of SurfacePreset found in the preset folder.
 */
-class SurfacePresets : public std::map<int, std::shared_ptr<SurfacePreset>>
+class SurfacePresets : public std::map<uint32_t, std::shared_ptr<SurfacePreset>>
 {
 protected:
 	void insert(std::shared_ptr<SurfacePreset> preset)
 	{
 		if (preset)
-			std::map<int, std::shared_ptr<SurfacePreset>>::insert(std::make_pair(preset->fileHash(), preset));
+			std::map<uint32_t, std::shared_ptr<SurfacePreset>>::insert(std::make_pair(preset->fileHash(), preset));
 	}
 
 	std::string _getExecutableDirPath()
@@ -490,7 +498,6 @@ The static preset list will be populated on DLL load from all files in the prese
 static SurfacePresets surface_presets;
 
 
-
 /*
 A control surface plugin needs to override IReaperControlSurface.
 This override is a lot simpler than usual, as it just forwards MIDI orders to the active preset,
@@ -502,7 +509,7 @@ class ControlSurfaceGeneric : public IReaperControlSurface
 private:
 	int _midi_in_dev;
 	int _midi_out_dev;
-	int _preset;
+	uint32_t _preset;
 
 	midi_Output* _midi_out;
 	midi_Input* _midi_in;
@@ -538,7 +545,7 @@ private:
 	}
 
 public:
-	ControlSurfaceGeneric(int indev, int outdev, int preset, int* errStats)
+	ControlSurfaceGeneric(int indev, int outdev, uint32_t preset, int* errStats)
 		: _midi_in_dev(indev)
 		, _midi_out_dev(outdev)
 		, _preset(preset)
@@ -590,7 +597,7 @@ public:
 	*/
 	const char* GetConfigString()
 	{
-		sprintf(_cfg_string, "%d %d %d", _midi_in_dev, _midi_out_dev, _preset);
+		sprintf(_cfg_string, "%d %d %u", _midi_in_dev, _midi_out_dev, _preset);
 		return _cfg_string;
 	}
 
@@ -683,9 +690,10 @@ public:
 /*
 Parse the plugin configuration string (input device ID, output device ID, preset ID)
 */
-static void parseParameters(const char* str, int params[3])
+static void parseParameters(const char* str, int params[2], uint32_t& preset_id)
 {
-	params[0] = params[1] = params[2] = -1;
+	params[0] = params[1] = -1;
+	preset_id = 0;
 
 	const char* p = str;
 
@@ -693,7 +701,7 @@ static void parseParameters(const char* str, int params[3])
 	{
 		int x = 0;
 
-		while (x < 3)
+		while (x < 2)
 		{
 			while (*p == ' ')
 				p++;
@@ -706,6 +714,8 @@ static void parseParameters(const char* str, int params[3])
 			while (*p && *p != ' ')
 				p++;
 		}
+
+		preset_id = strtoul(p, nullptr, 0);
 	}
 }
 
@@ -715,10 +725,11 @@ Instantiate the plugin
 */
 static IReaperControlSurface* createFunc(const char* type_string, const char* configString, int* errStats)
 {
-	int params[3];
-	parseParameters(configString, params);
+	int params[2];
+	uint32_t preset_id = 0;
+	parseParameters(configString, params, preset_id);
 
-	return new ControlSurfaceGeneric(params[0], params[1], params[2], errStats);
+	return new ControlSurfaceGeneric(params[0], params[1], preset_id, errStats);
 }
 
 static WDL_DLGRET dlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -730,19 +741,23 @@ static WDL_DLGRET dlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		/*
 		Add comboboxes to the plugin's configuration dialog
 		*/
-		int params[3];
-		parseParameters((const char*)lParam, params);
+		int params[2];
+		uint32_t preset_id = 0;
+		parseParameters((const char*)lParam, params, preset_id);
 
 		int count = GetNumMIDIInputs();
 		LRESULT entry_none = SendDlgItemMessage(hwndDlg, IDC_COMBO2, CB_ADDSTRING, 0, (LPARAM)"None");
 		SendDlgItemMessage(hwndDlg, IDC_COMBO2, CB_SETITEMDATA, entry_none, -1);
+
 		for (int i = 0; i < count; i++)
 		{
 			char buf[512];
+
 			if (GetMIDIInputName(i, buf, sizeof(buf)))
 			{
 				LRESULT entry_midi = SendDlgItemMessage(hwndDlg, IDC_COMBO2, CB_ADDSTRING, 0, (LPARAM)buf);
 				SendDlgItemMessage(hwndDlg, IDC_COMBO2, CB_SETITEMDATA, entry_midi, i);
+
 				if (i == params[0])
 					SendDlgItemMessage(hwndDlg, IDC_COMBO2, CB_SETCURSEL, entry_midi, 0);
 			}
@@ -751,13 +766,16 @@ static WDL_DLGRET dlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		entry_none = SendDlgItemMessage(hwndDlg, IDC_COMBO3, CB_ADDSTRING, 0, (LPARAM)"None");
 		SendDlgItemMessage(hwndDlg, IDC_COMBO3, CB_SETITEMDATA, entry_none, -1);
 		count = GetNumMIDIOutputs();
+
 		for (int i = 0; i < count; i++)
 		{
 			char buf[512];
+
 			if (GetMIDIOutputName(i, buf, sizeof(buf)))
 			{
 				LRESULT entry_midi = SendDlgItemMessage(hwndDlg, IDC_COMBO3, CB_ADDSTRING, 0, (LPARAM)buf);
 				SendDlgItemMessage(hwndDlg, IDC_COMBO3, CB_SETITEMDATA, entry_midi, i);
+
 				if (i == params[1])
 					SendDlgItemMessage(hwndDlg, IDC_COMBO3, CB_SETCURSEL, entry_midi, 0);
 			}
@@ -765,16 +783,19 @@ static WDL_DLGRET dlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 		entry_none = SendDlgItemMessage(hwndDlg, IDC_COMBO4, CB_ADDSTRING, 0, (LPARAM)"None");
 		SendDlgItemMessage(hwndDlg, IDC_COMBO4, CB_SETITEMDATA, entry_none, -1);
+
 		for (const auto& preset : surface_presets)
 		{
-			int preset_key = preset.first;
+			uint32_t preset_key = preset.first;
 			LRESULT entry_preset = SendDlgItemMessage(hwndDlg, IDC_COMBO4, CB_ADDSTRING, 0, (LPARAM)preset.second->name().c_str());
 			SendDlgItemMessage(hwndDlg, IDC_COMBO4, CB_SETITEMDATA, entry_preset, preset_key);
-			if (preset_key == params[2])
+
+			if (preset_key == preset_id)
 				SendDlgItemMessage(hwndDlg, IDC_COMBO4, CB_SETCURSEL, entry_preset, 0);
 		}
+
+		break;
 	}
-	break;
 
 	case WM_USER + 1024:
 	{
@@ -784,25 +805,30 @@ static WDL_DLGRET dlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		if (wParam > 1 && lParam)
 		{
 			char tmp[512];
-			int midi_in = -1, midi_out = -1, preset = -1;
+			int midi_in = -1, midi_out = -1;
+			uint32_t preset = 0;
 
 			LRESULT r = SendDlgItemMessage(hwndDlg, IDC_COMBO2, CB_GETCURSEL, 0, 0);
+
 			if (r != CB_ERR)
 				midi_in = (int)SendDlgItemMessage(hwndDlg, IDC_COMBO2, CB_GETITEMDATA, r, 0);
 
 			r = SendDlgItemMessage(hwndDlg, IDC_COMBO3, CB_GETCURSEL, 0, 0);
+
 			if (r != CB_ERR)
 				midi_out = (int)SendDlgItemMessage(hwndDlg, IDC_COMBO3, CB_GETITEMDATA, r, 0);
 
 			r = SendDlgItemMessage(hwndDlg, IDC_COMBO4, CB_GETCURSEL, 0, 0);
-			if (r != CB_ERR)
-				preset = (int)SendDlgItemMessage(hwndDlg, IDC_COMBO4, CB_GETITEMDATA, r, 0);
 
-			sprintf(tmp, "%d %d %d", midi_in, midi_out, preset);
+			if (r != CB_ERR)
+				preset = (uint32_t)SendDlgItemMessage(hwndDlg, IDC_COMBO4, CB_GETITEMDATA, r, 0);
+
+			sprintf(tmp, "%d %d %u", midi_in, midi_out, preset);
 			lstrcpyn((char*)lParam, tmp, (int)wParam);
 		}
+
+		break;
 	}
-	break;
 	}
 	return 0;
 }
